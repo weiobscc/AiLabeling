@@ -1,16 +1,42 @@
-# 这是一个示例 Python 脚本。
+"""AI 标注训练软件 —— 程序入口。
 
-# 按 Shift+F10 执行或将其替换为您的代码。
-# 按 双击 Shift 在所有地方搜索类、文件、工具窗口、操作和设置。
+运行：
+    python main.py
+"""
+import sys
+import traceback
+
+from PyQt6.QtWidgets import QApplication
+
+from ui.main_window import MainWindow
+
+# 模块级引用：防止 QApplication / 主窗口被垃圾回收导致窗口一闪而过
+_app: QApplication | None = None
+_window: MainWindow | None = None
 
 
-def print_hi(name):
-    # 在下面的代码行中使用断点来调试脚本。
-    print(f'Hi, {name}')  # 按 Ctrl+F8 切换断点。
+def main() -> int:
+    global _app, _window
+
+    _app = QApplication(sys.argv)
+    _app.setApplicationName("AI 标注训练软件")
+    _app.setStyle("Fusion")
+
+    _window = MainWindow()
+    _window.show()
+    return _app.exec()
 
 
-# 按装订区域中的绿色按钮以运行脚本。
-if __name__ == '__main__':
-    print_hi('PyCharm')
-11
-# 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001
+        # 启动或运行期间发生异常时，打印完整堆栈而非静默退出
+        traceback.print_exc()
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(None, "程序异常", f"{exc}\n\n详情见命令行输出。")
+        except Exception:  # noqa: BLE001
+            pass
+        sys.exit(1)
