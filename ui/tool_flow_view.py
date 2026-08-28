@@ -1,18 +1,20 @@
-"""工具依赖流程图。
+"""工具流程视图。
 
 基于 Qt 视图系统（QGraphicsView / QGraphicsScene / QGraphicsItem）绘制
-标注工具之间的依赖关系：
-    工具基类 (ToolBase)  ──►  三个工具组  ──►  各具体标注工具
+标注工具的流程关系：
+    「工具」分组节点  ──►  各工具层级（纵向先后，横向并行）
 
 交互：
-    - 单击工具节点  → 发射 tool_clicked 信号（主窗口据此打开工具基类界面）
-    - 单击/框选节点 → 选中高亮
+    - 单击工具节点    → 发射 tool_clicked 信号（主窗口据此打开工具基类界面）
+    - 左键拖拽工具节点 → 调整先后/并行关系（松手自动归层对齐）
+    - 右键工具节点    → 在其后添加 / 并行添加 / 移除
+    - 单击/框选节点   → 选中高亮
     - 滚轮缩放、中键拖拽平移、双击空白适应视图
 """
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import (
@@ -26,6 +28,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QGraphicsItem,
+    QGraphicsObject,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -34,7 +37,7 @@ from PyQt6.QtWidgets import (
     QStyle,
 )
 
-from alg.tools_registry import TOOL_GROUPS, get_tool
+from alg.tools_registry import get_tool
 from ui.tool_panel import ToolPanel
 
 # ---------------------------------------------------------------------- #
@@ -43,11 +46,14 @@ from ui.tool_panel import ToolPanel
 NODE_W = 156.0
 NODE_H = 52.0
 
-GROUP_COLORS: Dict[str, QColor] = {
-    "通用工具": QColor("#0EA5E9"),
-    "YOLO工具": QColor("#F59E0B"),
-    "Paddle工具": QColor("#10B981"),
-}
+# 流程图中唯一的工具分组节点（通用/YOLO/Paddle 仅是工具面板内的分类标签）
+DEFAULT_GROUP = "工具"
+DEFAULT_ACCENT = QColor("#0EA5E9")
+
+# 工具节点层级布局：纵向为先后顺序，横向为并行关系
+FIRST_LEVEL_Y = 130.0     # 首个工具层级的 y 坐标
+LEVEL_GAP = 100.0         # 层级（上下）间距
+PARALLEL_GAP = 200.0      # 并行（左右）间距
 
 _BG_COLOR = QColor("#F1F5F9")
 _EDGE_COLOR = QColor("#94A3B8")
@@ -56,8 +62,17 @@ _EDGE_COLOR = QColor("#94A3B8")
 # ---------------------------------------------------------------------- #
 # 流程节点
 # ---------------------------------------------------------------------- #
-class FlowNodeItem(QGraphicsItem):
-    """流程图中的节点：圆角矩形 + 标题 + 副标题。"""
+class FlowNodeItem(QGraphicsObject):
+    """流程图中的节点：圆角矩形 + 标题 + 副标题。
+
+    工具节点支持左键拖拽调整流程顺序，拖动过程中实时发射
+    ``moved`` 信号刷新连线，松手后发射 ``drag_finished`` 触发重新归层。
+    """
+
+    # 节点被拖动时发射（参数为节点自身）
+    moved = pyqtSignal(object)
+    # 节点拖拽结束（松手）时发射（参数为节点自身）
+    drag_finished = pyqtSignal(object)
 
     def __init__(
         self,
@@ -76,12 +91,49 @@ class FlowNodeItem(QGraphicsItem):
         self.tool_id = tool_id
         self.accent = accent or QColor("#2563EB")
         self._hovered = False
+        self._dragging = False
+        self._moved_any = False
+        self._press_scene_pos = QPointF()
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
             | QGraphicsItem.GraphicsItemFlag.ItemIsFocusable
         )
         self.setAcceptHoverEvents(True)
         self.setZValue(10)
+
+    # -- 拖拽 -- #
+    def mousePressEvent(self, event) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.node_type == "tool"
+        ):
+            self._dragging = True
+            self._moved_any = False
+            self._press_scene_pos = event.scenePos()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging:
+            delta = event.scenePos() - self._press_scene_pos
+            if not self._moved_any and delta.manhattanLength() >= 4:
+                self._moved_any = True
+            if self._moved_any:
+                # 只有真正移动后才移动节点，避免单击触发归层
+                self._press_scene_pos = event.scenePos()
+                self.setPos(self.pos() + delta)
+                self.moved.emit(self)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if self._dragging and event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+            if self._moved_any:
+                self.drag_finished.emit(self)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     # -- 几何 -- #
     def boundingRect(self) -> QRectF:
@@ -270,12 +322,17 @@ class ToolFlowView(QGraphicsView):
         self.setScene(self._scene)
         self._nodes: Dict[str, FlowNodeItem] = {}
         self._group_node: Dict[str, FlowNodeItem] = {}
-        self._group_tool_nodes: Dict[str, list] = {}
+        # 工具节点按“层级”组织：外层为先后顺序，内层为并行工具
+        self._level_nodes: List[List[FlowNodeItem]] = []
         self._hint_item: Optional[QGraphicsSimpleTextItem] = None
         self._picker_panel: Optional[ToolPanel] = None
         self._panning = False
         self._pan_start = QPointF()
         self._fitted = False
+        # 单击 / 拖拽区分状态
+        self._press_node: Optional[FlowNodeItem] = None
+        self._press_pos = QPointF()
+        self._press_moved = False
 
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QPainter.RenderHint.TextAntialiasing)
@@ -325,6 +382,9 @@ class ToolFlowView(QGraphicsView):
             node.setToolTip(f"<b>{title}</b><br>{subtitle}")
         self._scene.addItem(node)
         self._nodes[node_id] = node
+        if node_type == "tool":
+            node.moved.connect(self._on_node_moved)
+            node.drag_finished.connect(self._on_node_drag_finished)
         return node
 
     def _connect(self, src: FlowNodeItem, dst: FlowNodeItem) -> ArrowItem:
@@ -368,39 +428,22 @@ class ToolFlowView(QGraphicsView):
     # ------------------------------------------------------------------ #
     # 工具节点增删（右键菜单）
     # ------------------------------------------------------------------ #
-    def _group_of_node(self, node: FlowNodeItem) -> Optional[str]:
-        """返回节点所属的工具组名。"""
-        for gname, nodes in self._group_tool_nodes.items():
-            if node in nodes:
-                return gname
-        return None
-
-    def _ensure_group_node(self, group: str) -> FlowNodeItem:
-        """按需创建工具分组节点。
-
-        画布初始为空，首个工具添加时自动创建其所属分组节点；
-        分组节点从左到右依次排布，工具随后挂载到分组下方。
-        """
-        gnode = self._group_node.get(group)
+    def _ensure_group_node(self) -> FlowNodeItem:
+        """确保唯一的工具分组节点存在（画布初始为空，首个工具添加时自动创建）。"""
+        gnode = self._group_node.get(DEFAULT_GROUP)
         if gnode is not None:
             return gnode
-        accent = GROUP_COLORS.get(group, QColor("#0EA5E9"))
-        desc = next(
-            (g["description"] for g in TOOL_GROUPS if g["name"] == group), ""
-        )
         gnode = self._create_node(
-            f"group:{group}", group, desc, node_type="group", accent=accent,
+            f"group:{DEFAULT_GROUP}", DEFAULT_GROUP,
+            "可添加各类标注 / 推理工具",
+            node_type="group", accent=DEFAULT_ACCENT,
         )
-        x = 0.0
-        for n in self._group_node.values():
-            x = max(x, n.pos().x() + 260.0)
-        gnode.setPos(x, 0)
-        self._group_node[group] = gnode
-        self._group_tool_nodes[group] = []
+        gnode.setPos(0, 0)
+        self._group_node[DEFAULT_GROUP] = gnode
         return gnode
 
     def add_tool_to_flow(self, tool_id: str) -> bool:
-        """把工具添加到其所属分组末尾（「＋ 添加工具」按钮 / 右键分组菜单）。
+        """把工具作为新层级追加到流程末尾（「＋ 添加工具」按钮 / 右键分组菜单）。
 
         分组节点不存在时自动创建。已在流程中或工具不存在时返回 False。
         """
@@ -410,64 +453,54 @@ class ToolFlowView(QGraphicsView):
             meta = get_tool(tool_id)
         except KeyError:
             return False
-        group = meta["group"]
-        gnode = self._ensure_group_node(group)
-        accent = GROUP_COLORS.get(group, QColor("#0EA5E9"))
+        self._ensure_group_node()
         node = self._create_node(
             meta["id"], meta["name"], meta["category"],
-            node_type="tool", accent=accent,
+            node_type="tool", accent=DEFAULT_ACCENT,
         )
-        nodes = self._group_tool_nodes[group]
-        if nodes:
-            node.setPos(nodes[-1].pos().x(), nodes[-1].pos().y() + 92)
-        else:
-            node.setPos(gnode.pos().x(), gnode.pos().y() + 130)
-        self._connect(gnode, node)
-        nodes.append(node)
-        self._update_scene_rect()
+        self._level_nodes.append([node])
+        self._relayout()
         return True
 
-    def _insert_tool_after(
-        self, after: FlowNodeItem, meta: dict
-    ) -> FlowNodeItem:
-        """在 after 节点之后插入一个新工具节点，后续节点依次下移。"""
-        group = self._group_of_node(after)
-        if group is None:
-            return after
-        gnode = self._group_node[group]
-        nodes = self._group_tool_nodes[group]
-        idx = nodes.index(after)
-
-        # 被插入位置之后的节点整体下移一格
-        for n in nodes[idx + 1:]:
-            n.setPos(n.pos().x(), n.pos().y() + 92)
-
-        accent = GROUP_COLORS.get(group, QColor("#0EA5E9"))
+    def _add_after_tool(self, after: FlowNodeItem, meta: dict) -> FlowNodeItem:
+        """顺序添加：在 after 所在层级之后插入一个新层级。"""
         node = self._create_node(
             meta["id"], meta["name"], meta["category"],
-            node_type="tool", accent=accent,
+            node_type="tool", accent=DEFAULT_ACCENT,
         )
-        node.setPos(after.pos().x(), after.pos().y() + 92)
-        nodes.insert(idx + 1, node)
-        self._connect(gnode, node)
+        for li, level in enumerate(self._level_nodes):
+            if after in level:
+                self._level_nodes.insert(li + 1, [node])
+                break
+        else:
+            self._level_nodes.append([node])
+        self._relayout()
+        return node
 
-        # 刷新被下移节点的连线
-        for n in nodes[idx + 2:]:
-            self._refresh_arrow(gnode, n)
-        self._update_scene_rect()
+    def _add_parallel_tool(
+        self, anchor: FlowNodeItem, meta: dict
+    ) -> FlowNodeItem:
+        """并行添加：与 anchor 处于同一层级，左右并排。"""
+        node = self._create_node(
+            meta["id"], meta["name"], meta["category"],
+            node_type="tool", accent=DEFAULT_ACCENT,
+        )
+        for level in self._level_nodes:
+            if anchor in level:
+                level.append(node)
+                break
+        else:
+            self._level_nodes.append([node])
+        self._relayout()
         return node
 
     def _remove_tool_node(self, node: FlowNodeItem) -> None:
-        """删除指定工具节点及其连线，后续节点整体上移。"""
-        group = self._group_of_node(node)
-        if group is None:
-            return
-        gnode = self._group_node[group]
-        nodes = self._group_tool_nodes[group]
-        idx = nodes.index(node)
-        nodes.pop(idx)
+        """删除指定工具节点及其连线，其余节点按层级重新布局。"""
+        for level in self._level_nodes:
+            if node in level:
+                level.remove(node)
+                break
         self._nodes.pop(node.node_id, None)
-
         # 先删除与节点相关的连线，再删除节点本身
         for item in list(self._scene.items()):
             if isinstance(item, ArrowItem) and (
@@ -475,35 +508,112 @@ class ToolFlowView(QGraphicsView):
             ):
                 self._scene.removeItem(item)
         self._scene.removeItem(node)
+        self._relayout()
 
-        # 后续节点整体上移一格并刷新连线
-        for n in nodes[idx:]:
-            n.setPos(n.pos().x(), n.pos().y() - 92)
-            self._refresh_arrow(gnode, n)
+    # ------------------------------------------------------------------ #
+    # 层级布局与连线
+    # ------------------------------------------------------------------ #
+    def _relayout(self, compact: bool = True) -> None:
+        """按层级重新排列所有工具节点并重建连线。
+
+        compact=False 时保留空层级（拖拽归层使用，避免中间空档塌缩）。
+        """
+        if compact:
+            self._level_nodes = [lv for lv in self._level_nodes if lv]
+        for li, level in enumerate(self._level_nodes):
+            for ji, node in enumerate(level):
+                node.setPos(ji * PARALLEL_GAP, FIRST_LEVEL_Y + li * LEVEL_GAP)
+                node.setZValue(10)
+        # 重建所有连线（基于非空层级序列）
+        for item in list(self._scene.items()):
+            if isinstance(item, ArrowItem):
+                self._scene.removeItem(item)
+        gnode = self._group_node.get(DEFAULT_GROUP)
+        if gnode is None:
+            self._update_scene_rect()
+            return
+        levels = [lv for lv in self._level_nodes if lv]
+        if levels:
+            # 分组 → 第一层级每个工具
+            for node in levels[0]:
+                self._connect(gnode, node)
+            # 层级之间：上一层级每个工具 → 下一层级每个工具
+            for li in range(len(levels) - 1):
+                for src in levels[li]:
+                    for dst in levels[li + 1]:
+                        self._connect(src, dst)
         self._update_scene_rect()
 
+    def _snap_node_to_level(self, node: FlowNodeItem) -> None:
+        """拖拽松手后，按节点当前位置重新计算所属层级与层内顺序。"""
+        # 从原层级移除，并压缩空层级
+        for level in self._level_nodes:
+            if node in level:
+                level.remove(node)
+                break
+        self._level_nodes = [lv for lv in self._level_nodes if lv]
+        y = node.pos().y()
+        li = max(0, round((y - FIRST_LEVEL_Y) / LEVEL_GAP))
+        if not self._level_nodes:
+            # 场景中无其他工具：唯一合理位置即层级 0
+            self._level_nodes.append([node])
+            return
+        li = min(li, len(self._level_nodes))  # 最多追加在末尾
+        while li >= len(self._level_nodes):
+            self._level_nodes.append([])
+        level = self._level_nodes[li]
+        x = node.pos().x()
+        idx = len(level)
+        for i, n in enumerate(level):
+            if x < n.pos().x():
+                idx = i
+                break
+        level.insert(idx, node)
+
+    # -- 拖拽回调 -- #
+    def _on_node_moved(self, node: FlowNodeItem) -> None:
+        """拖拽过程中实时刷新与节点相连的箭头。"""
+        for item in self._scene.items():
+            if isinstance(item, ArrowItem) and (
+                item._src is node or item._dst is node
+            ):
+                item.refresh()
+
+    def _on_node_drag_finished(self, node: FlowNodeItem) -> None:
+        """拖拽松手：重新归层并恢复整齐布局。"""
+        if node.node_type != "tool":
+            return
+        self._snap_node_to_level(node)
+        self._relayout()
+
     # -- 添加工具：弹出展开的工具选择列表 -- #
-    def _pick_and_add_tool(self, node: Optional[FlowNodeItem]) -> None:
+    def _pick_and_add_tool(
+        self, node: Optional[FlowNodeItem], parallel: bool = False
+    ) -> None:
+        """弹出工具选择列表。
+
+        - node 为空/分组节点：追加到流程末尾
+        - parallel=False：顺序添加（在 node 之后插入新层级）
+        - parallel=True：并行添加（与 node 同层级并排）
+        """
         panel = ToolPanel()
         panel.setWindowFlags(
             Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
         )
         panel.tool_clicked.connect(
-            lambda tid, n=node, p=panel: self._on_pick_add(n, tid, p)
+            lambda tid, n=node, p=panel, par=parallel: self._on_pick_add(
+                n, tid, p, par
+            )
         )
-        # 默认定位到右键节点所在分组，方便就近选择
-        group = self._group_of_node(node)
-        if group is None and node is not None and node.node_type == "group":
-            group = node.title
-        if group:
-            panel.select_group(group)
         self._picker_panel = panel
         panel.move(QCursor.pos())
         panel.show()
         panel.raise_()
         panel.activateWindow()
 
-    def _on_pick_add(self, after, tool_id: str, panel: ToolPanel) -> None:
+    def _on_pick_add(
+        self, after, tool_id: str, panel: ToolPanel, parallel: bool = False
+    ) -> None:
         panel.close()
         if tool_id == "tool_base":
             # 工具基类：流程视图中定位并高亮基类节点，同时打开工具基类界面
@@ -519,10 +629,12 @@ class ToolFlowView(QGraphicsView):
             )
             return
         if after is None or after.node_type == "group":
-            # 空白处/分组节点右键：添加到该分组末尾（分组不存在时自动创建）
+            # 空白处/分组节点右键：追加到流程末尾
             self.add_tool_to_flow(tool_id)
+        elif parallel:
+            self._add_parallel_tool(after, get_tool(tool_id))
         else:
-            self._insert_tool_after(after, get_tool(tool_id))
+            self._add_after_tool(after, get_tool(tool_id))
         self.tool_added.emit(tool_id, get_tool(tool_id)["name"])
 
     # ------------------------------------------------------------------ #
@@ -541,11 +653,11 @@ class ToolFlowView(QGraphicsView):
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
+            # 记录按下信息，松手时判断是单击还是拖拽
             node = self._node_at(event.position().toPoint())
-            if node is not None and node.node_type in ("base", "tool"):
-                # 单击工具/基类节点 → 跳转工具基类界面
-                self.tool_clicked.emit(node.tool_id, node.title)
-                return
+            self._press_node = node
+            self._press_pos = event.position()
+            self._press_moved = False
 
         super().mousePressEvent(event)
 
@@ -561,6 +673,9 @@ class ToolFlowView(QGraphicsView):
             )
             event.accept()
             return
+        if self._press_node is not None and not self._press_moved:
+            if (event.position() - self._press_pos).manhattanLength() > 6:
+                self._press_moved = True
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
@@ -569,6 +684,13 @@ class ToolFlowView(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton:
+            node = self._press_node
+            self._press_node = None
+            if node is not None and not self._press_moved:
+                # 未拖动 → 视为单击，跳转工具基类界面
+                if node.node_type in ("base", "tool"):
+                    self.tool_clicked.emit(node.tool_id, node.title)
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:
@@ -619,17 +741,23 @@ class ToolFlowView(QGraphicsView):
             self._pick_and_add_tool(node)
 
     def _show_tool_menu(self, node: FlowNodeItem, event) -> None:
-        """工具节点右键菜单：添加工具 / 移除此工具 / 选择添加工具。
+        """工具节点右键菜单：顺序/并行添加、移除此工具、选择添加工具。
 
         添加类操作均展开工具选择列表，由用户挑选要添加的工具。
         """
         menu = QMenu(self)
-        act_add = menu.addAction("＋ 添加工具…")
+        act_add = menu.addAction("＋ 在其后添加工具…")
+        act_parallel = menu.addAction("⇄ 并行添加工具…")
         act_remove = menu.addAction("🗑 移除此工具")
+        menu.addSeparator()
         act_pick = menu.addAction("选择添加工具…")
         chosen = menu.exec(event.globalPos())
         if chosen in (act_add, act_pick):
+            # 顺序添加：在该工具所在层级之后插入新层级
             self._pick_and_add_tool(node)
+        elif chosen == act_parallel:
+            # 并行添加：与该工具同层级并排
+            self._pick_and_add_tool(node, parallel=True)
         elif chosen == act_remove:
             self._remove_tool_node(node)
 
