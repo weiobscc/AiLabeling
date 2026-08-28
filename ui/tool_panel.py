@@ -68,7 +68,7 @@ class ToolPanel(QWidget):
         body.setSpacing(10)
 
         self._group_list = QListWidget()
-        self._group_list.setFixedWidth(108)
+        self._group_list.setFixedWidth(122)
         self._group_list.setStyleSheet(
             "QListWidget { border: 1px solid #E2E8F0; border-radius: 6px;"
             " background: white; padding: 4px; }"
@@ -81,6 +81,8 @@ class ToolPanel(QWidget):
         self._group_list.currentRowChanged.connect(self._select_group)
 
         self._stack = QStackedWidget()
+
+        # 三个工具组
         for g in TOOL_GROUPS:
             self._group_list.addItem(
                 QListWidgetItem(f"{g['icon']}  {g['name']}")
@@ -138,10 +140,41 @@ class ToolPanel(QWidget):
         tree.itemClicked.connect(self._on_item_clicked)
         return tree
 
+    def _build_base_tree(self) -> QTreeWidget:
+        """工具基类面板：显示基类入口，点击后发射 tool_clicked("tool_base")。"""
+        tree = QTreeWidget()
+        tree.setHeaderHidden(True)
+        tree.setRootIsDecorated(False)
+        tree.setAnimated(True)
+        tree.setStyleSheet(
+            "QTreeWidget { border: 1px solid #E2E8F0; border-radius: 6px;"
+            " background: white; font-size: 12px; }"
+            "QTreeWidget::item { padding: 5px 4px; color: #334155; }"
+            "QTreeWidget::item:hover { background: #F1F5F9; }"
+            "QTreeWidget::item:selected { background: #DBEAFE; color: #1D4ED8; }"
+            "QTreeWidget::branch { background: transparent; }"
+        )
+        item = QTreeWidgetItem(tree)
+        item.setText(0, "工具基类  ToolBase")
+        item.setToolTip(0, "所有标注工具的共同基类，提供通用标注流程框架。")
+        item.setData(0, Qt.ItemDataRole.UserRole, "tool_base")
+        item.setForeground(0, QColor("#334155"))
+        tree.itemClicked.connect(self._on_item_clicked)
+        return tree
+
     # ------------------------------------------------------------------ #
     def _select_group(self, row: int) -> None:
-        if 0 <= row < len(TOOL_GROUPS):
+        if 0 <= row < self._stack.count():
             self._stack.setCurrentIndex(row)
+
+    def select_group(self, group_name: str) -> None:
+        """程序化选中某个工具组（添加工具时默认定位到右键节点所在分组）。"""
+        if not group_name:
+            return
+        for row in range(self._group_list.count()):
+            if group_name in self._group_list.item(row).text():
+                self._group_list.setCurrentRow(row)
+                return
 
     def _on_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         tool_id = item.data(0, Qt.ItemDataRole.UserRole)

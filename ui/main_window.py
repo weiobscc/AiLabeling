@@ -2,7 +2,7 @@
 
 布局：
     ┌─ 菜单栏 ───────────────────────────────────────────┐
-    │ 文件 | 项目管理 | 视图 | 帮助                        │
+    │  项目管理 | 视图 | 帮助                        │
     ├───────────────┬────────────────────────────────────┤
     │  ◀ 左侧可折叠  │                                    │
     │  工具依赖流程 [＋ 添加工具]                         │
@@ -15,11 +15,12 @@
     - 项目管理菜单：展开项目列表，可新增项目、删除选中项目、切换当前项目
     - 左侧面板（QDockWidget）可折叠/浮动/关闭，视图菜单可重新显示
     - 「添加工具」按钮位于流程标题最右侧，点击后右侧弹出工具选择列表
-    - 依赖流程图 / 工具选择列表中点击工具 → 打开工具基类界面
+    - 依赖流程图 / 工具选择列表中点击工具 → 右侧面板展示工具基类信息（不弹窗）
+    - 鼠标悬浮到流程工具节点上 → 显示工具简单说明（tooltip）
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QActionGroup, QCursor, QIcon, QKeySequence
@@ -33,11 +34,13 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ui.tool_base_window import ToolBaseWindow
+from alg.tools_registry import get_tool
+from ui.tool_base_window import ToolBasePanel
 from ui.tool_flow_view import ToolFlowView
 from ui.tool_panel import ToolPanel
 
@@ -170,7 +173,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._projects: List[str] = []
         self._current_project: Optional[str] = None
-        self._tool_windows: Dict[str, ToolBaseWindow] = {}
 
         self.setWindowTitle("AI 标注训练软件")
         self.resize(1280, 800)
@@ -223,37 +225,20 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_act)
 
     # ------------------------------------------------------------------ #
-    # 右侧工作区（预留）
+    # 右侧工作区：初始为空，添加工具后显示流程依赖
     # ------------------------------------------------------------------ #
     def _build_central(self) -> None:
-        placeholder = QWidget()
-        placeholder.setObjectName("workspace")
-        placeholder.setStyleSheet(
+        self._workspace_stack = QStackedWidget()
+        self._workspace_stack.setObjectName("workspace")
+        self._workspace_stack.setStyleSheet(
             "QWidget#workspace { background: #F8FAFC; }"
         )
-        layout = QVBoxLayout(placeholder)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        icon = QLabel("🗂")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 64px; color: #CBD5E1;")
-        layout.addWidget(icon)
+        # 流程依赖面板：初始为空
+        self._tool_panel = ToolBasePanel()
+        self._workspace_stack.addWidget(self._tool_panel)
 
-        text = QLabel("右侧工作区（预留）")
-        text.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        text.setStyleSheet(
-            "font-size: 20px; font-weight: 700; color: #94A3B8;"
-        )
-        layout.addWidget(text)
-
-        hint = QLabel(
-            "此处将承载标注画布、图像预览、标签管理与训练配置等核心功能。"
-        )
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setStyleSheet("font-size: 13px; color: #CBD5E1;")
-        layout.addWidget(hint)
-
-        self.setCentralWidget(placeholder)
+        self.setCentralWidget(self._workspace_stack)
 
     # ------------------------------------------------------------------ #
     # 左侧可折叠面板
@@ -278,7 +263,7 @@ class MainWindow(QMainWindow):
         flow_title.setStyleSheet(
             "font-size: 13px; font-weight: 700; color: #334155;"
         )
-        flow_tip = QLabel("点击工具节点跳转工具基类界面")
+        flow_tip = QLabel("添加工具后，右侧显示流程依赖")
         flow_tip.setStyleSheet("font-size: 11px; color: #94A3B8;")
         flow_header.addWidget(flow_title)
         flow_header.addStretch()
@@ -298,7 +283,8 @@ class MainWindow(QMainWindow):
         flow_layout.addLayout(flow_header)
 
         self.tool_flow_view = ToolFlowView()
-        self.tool_flow_view.tool_clicked.connect(self.open_tool_window)
+        self.tool_flow_view.tool_clicked.connect(self.show_tool_in_panel)
+        self.tool_flow_view.tool_added.connect(self.show_tool_in_panel)
         flow_layout.addWidget(self.tool_flow_view, 1)
 
         splitter.addWidget(flow_panel)
@@ -327,22 +313,18 @@ class MainWindow(QMainWindow):
         return act
 
     # ------------------------------------------------------------------ #
-    # 工具基类界面跳转
+    # 流程依赖展示（右侧面板）
     # ------------------------------------------------------------------ #
-    def open_tool_window(self, tool_id: str, _name: str = "") -> None:
-        """打开（或复用）工具基类界面窗口。"""
-        win = self._tool_windows.get(tool_id)
-        if win is None or win.isHidden():
-            win = ToolBaseWindow(tool_id, self)
-            win.destroyed.connect(
-                lambda _obj=None, tid=tool_id: self._tool_windows.pop(tid, None)
-            )
-            self._tool_windows[tool_id] = win
-        win.show()
-        win.raise_()
-        win.activateWindow()
+    def show_tool_in_panel(self, tool_id: str, _name: str = "") -> None:
+        """添加/点击工具后由右侧面板展示该工具的流程依赖。"""
+        try:
+            self._tool_panel.show_dependency(tool_id)
+        except KeyError:
+            self.statusBar().showMessage(f"未知工具：{tool_id}", 3000)
+            return
+        self._workspace_stack.setCurrentWidget(self._tool_panel)
         self.statusBar().showMessage(
-            f"已打开工具：{win.windowTitle()}", 3000
+            f"已显示流程依赖：{get_tool(tool_id)['name']}", 3000
         )
 
     # ------------------------------------------------------------------ #
@@ -371,9 +353,18 @@ class MainWindow(QMainWindow):
         self._tool_picker_panel.activateWindow()
 
     def _on_picker_selected(self, tool_id: str) -> None:
+        """「＋ 添加工具」选中后：把工具加入流程并展示其流程依赖。"""
         if self._tool_picker_panel is not None:
             self._tool_picker_panel.close()
-        self.open_tool_window(tool_id)
+        if tool_id == "tool_base":
+            # 工具基类不进入流程，直接展示其流程依赖
+            self.show_tool_in_panel("tool_base")
+            return
+        if self.tool_flow_view.add_tool_to_flow(tool_id):
+            self.tool_flow_view.tool_added.emit(tool_id, get_tool(tool_id)["name"])
+        else:
+            # 已在流程中：仍展示其流程依赖
+            self.show_tool_in_panel(tool_id)
 
     # ------------------------------------------------------------------ #
     # 项目管理回调
@@ -411,5 +402,5 @@ class MainWindow(QMainWindow):
             "<h3>AI 标注训练软件</h3>"
             "<p>标注工具流程与工具管理界面框架。</p>"
             "<p>在左侧依赖流程图或工具列表中点击工具，"
-            "可打开对应工具基类界面。</p>",
+            "可在右侧面板查看对应工具基类信息。</p>",
         )
