@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (
 )
 
 from alg.tools_registry import get_tool
-from ui.tool_panel import ToolPanel
+from ui.common.tool_panel import ToolPanel
 
 # ---------------------------------------------------------------------- #
 # 常量与配色

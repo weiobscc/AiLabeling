@@ -8,7 +8,7 @@ import traceback
 
 from PyQt6.QtWidgets import QApplication
 
-from ui.main_window import MainWindow
+from ui.main.main_window import MainWindow
 
 # 模块级引用：防止 QApplication / 主窗口被垃圾回收导致窗口一闪而过
 _app: QApplication | None = None

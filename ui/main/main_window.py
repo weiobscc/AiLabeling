@@ -40,9 +40,9 @@ from PyQt6.QtWidgets import (
 )
 
 from alg.tools_registry import get_tool
-from ui.tool_base_window import ToolBasePanel
-from ui.tool_flow_view import ToolFlowView
-from ui.tool_panel import ToolPanel
+from ui.common.tool_base_window import ToolBasePanel
+from ui.common.tool_flow_view import ToolFlowView
+from ui.common.tool_panel import ToolPanel
 
 _STYLE = """
 QMenuBar {
