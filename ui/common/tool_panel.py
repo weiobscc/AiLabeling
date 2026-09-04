@@ -1,22 +1,22 @@
 """标注工具管理面板。
 
-左侧为三个工具组列表（通用工具 / YOLO工具 / Paddle工具），
-切换时右侧显示该组下按分类组织的工具树（如 YOLO 工具 → 检测/分割/分类/关键点）。
-单击工具项时发射 tool_clicked 信号，由主窗口跳转工具基类界面。
+参照「工具箱」布局改造：
+    一棵可折叠的多级工具树（工具组 → 分类 → 工具项），
+    分组标题深色加粗、可展开折叠，工具项带图标、选中高亮，
+    单击工具项时发射 ``tool_clicked`` 信号。
+
+对外提供两种可复用组件：
+    ToolTreeWidget  纯工具树（供主窗口左侧常驻「工具箱」面板使用）
+    ToolPanel       带标题栏的工具选择弹窗（供「添加工具」按钮 / 流程图右键使用）
 """
 from __future__ import annotations
 
 from typing import Dict, List
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
-    QHBoxLayout,
-    QHeaderView,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -25,37 +25,165 @@ from PyQt6.QtWidgets import (
 
 from alg.tools_registry import TOOL_GROUPS, get_tools_by_group
 
-_GROUP_COLORS = {
-    "通用工具": "#0EA5E9",
-    "YOLO工具": "#F59E0B",
-    "Paddle工具": "#10B981",
+# 分类 → 图标（参照图片，每个工具行前显示一个小图标）
+_CATEGORY_ICONS: Dict[str, str] = {
+    "基础标注": "📐",
+    "辅助标注": "✨",
+    "视图工具": "🖼",
+    "检测": "🎯",
+    "分割": "✂️",
+    "分类": "🏷",
+    "关键点": "🦴",
+    "OCR": "📄",
+    "引擎": "⚙",
+    "基座": "🧩",
 }
+
+_GROUP_ICONS: Dict[str, str] = {g["name"]: g["icon"] for g in TOOL_GROUPS}
+
+_TREE_STYLE = """
+QTreeWidget {
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    background: white;
+    font-size: 12px;
+    padding: 4px;
+    outline: none;
+}
+QTreeWidget::item {
+    padding: 5px 4px;
+    color: #334155;
+    border-radius: 5px;
+    margin: 1px 0;
+}
+QTreeWidget::item:hover { background: #F1F5F9; }
+QTreeWidget::item:selected {
+    background: #DBEAFE;
+    color: #1D4ED8;
+    font-weight: 600;
+}
+QTreeWidget::item:selected:!active { background: #DBEAFE; color: #1D4ED8; }
+QTreeWidget::branch {
+    background: transparent;
+    border-image: none;
+    image: none;
+}
+QTreeWidget::branch:has-children:closed { border-image: none; image: none; }
+QTreeWidget::branch:has-children:open { border-image: none; image: none; }
+"""
+
+
+def _tool_icon(t: dict) -> str:
+    """工具项图标：优先取分类图标，否则用所属工具组图标。"""
+    return _CATEGORY_ICONS.get(t["category"], _GROUP_ICONS.get(t["group"], "🛠"))
+
+
+class ToolTreeWidget(QWidget):
+    """可复用的工具分类树（参照图片布局）。
+
+    - 顶层按工具组（通用 / YOLO / Paddle）分组，可折叠
+    - 分组下按分类（检测 / 分割 / 分类…）再次分组，可折叠
+    - 工具项带图标，单击发射 ``tool_clicked(tool_id)``
+    """
+
+    tool_clicked = pyqtSignal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._tree: QTreeWidget | None = None
+        self._build()
+
+    # ------------------------------------------------------------------ #
+    def _build(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.setRootIsDecorated(True)
+        self._tree.setIndentation(16)
+        self._tree.setAnimated(True)
+        self._tree.setStyleSheet(_TREE_STYLE)
+        self._tree.itemClicked.connect(self._on_item_clicked)
+
+        for g in TOOL_GROUPS:
+            self._build_group(g["name"])
+        root.addWidget(self._tree)
+
+    def _build_group(self, group_name: str) -> None:
+        """构建某个工具组下的整棵子树：分组节点 → 分类节点 → 工具项。"""
+        gitem = QTreeWidgetItem(self._tree)
+        gitem.setText(0, f"{_GROUP_ICONS.get(group_name, '📦')}  {group_name}")
+        gitem.setToolTip(0, "工具分组")
+        gitem.setFlags(gitem.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+        font = QFont("Microsoft YaHei", 10)
+        font.setBold(True)
+        gitem.setFont(0, font)
+        gitem.setForeground(0, QColor("#0F172A"))
+
+        tools = get_tools_by_group(group_name)
+        categories: Dict[str, List[dict]] = {}
+        for t in tools:
+            categories.setdefault(t["category"], []).append(t)
+
+        for cat, items in categories.items():
+            citem = QTreeWidgetItem(gitem)
+            citem.setText(0, f"▸ {cat}  ({len(items)})")
+            citem.setToolTip(0, cat)
+            citem.setFlags(citem.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            cat_font = QFont("Microsoft YaHei", 9)
+            cat_font.setBold(True)
+            citem.setFont(0, cat_font)
+            citem.setForeground(0, QColor("#475569"))
+
+            for t in items:
+                child = QTreeWidgetItem(citem)
+                child.setText(0, f"{_tool_icon(t)}  {t['name']}")
+                child.setToolTip(0, t["description"])
+                child.setData(0, Qt.ItemDataRole.UserRole, t["id"])
+                child.setForeground(0, QColor("#334155"))
+                citem.addChild(child)
+
+            citem.setExpanded(True)
+
+        gitem.setExpanded(True)
+
+    # ------------------------------------------------------------------ #
+    def select_group(self, group_name: str) -> None:
+        """程序化展开并定位某个工具组（默认定位到右键节点所在分组）。"""
+        if not group_name or self._tree is None:
+            return
+        for i in range(self._tree.topLevelItemCount()):
+            gitem = self._tree.topLevelItem(i)
+            if group_name in gitem.text(0):
+                self._tree.expandItem(gitem)
+                for j in range(gitem.childCount()):
+                    self._tree.expandItem(gitem.child(j))
+                self._tree.scrollToItem(gitem)
+                return
+
+    def _on_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        tool_id = item.data(0, Qt.ItemDataRole.UserRole)
+        if tool_id:  # 叶子工具项
+            self.tool_clicked.emit(tool_id)
 
 
 class ToolPanel(QWidget):
-    """标注工具选择面板（作为「添加工具」按钮的弹出内容）。
-
-    左侧为三个工具组列表（通用工具 / YOLO工具 / Paddle工具），
-    切换时右侧显示该组下按分类组织的工具树（如 YOLO 工具 → 检测/分割/分类/关键点）。
-    单击工具项时发射 tool_clicked 信号，由主窗口跳转工具基类界面。
-    """
+    """带标题栏的工具选择弹窗（「＋ 添加工具」按钮 / 流程图右键添加用）。"""
 
     tool_clicked = pyqtSignal(str)  # tool_id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._group_trees: Dict[str, QTreeWidget] = {}
-        self.setFixedSize(520, 360)
+        self.setFixedSize(360, 420)
         self._build_ui()
-        self._select_group(0)
 
-    # ------------------------------------------------------------------ #
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 10, 12, 12)
         root.setSpacing(8)
 
-        # 标题
         title = QLabel("选择要添加的标注工具")
         title.setStyleSheet(
             "font-size: 13px; font-weight: 700; color: #334155;"
@@ -63,120 +191,10 @@ class ToolPanel(QWidget):
         )
         root.addWidget(title)
 
-        # 主体：左侧组列表 + 右侧工具树
-        body = QHBoxLayout()
-        body.setSpacing(10)
-
-        self._group_list = QListWidget()
-        self._group_list.setFixedWidth(122)
-        self._group_list.setStyleSheet(
-            "QListWidget { border: 1px solid #E2E8F0; border-radius: 6px;"
-            " background: white; padding: 4px; }"
-            "QListWidget::item { padding: 10px 6px; border-radius: 4px;"
-            " font-size: 12px; color: #334155; }"
-            "QListWidget::item:hover { background: #F1F5F9; }"
-            "QListWidget::item:selected { background: #DBEAFE; color: #1D4ED8;"
-            " font-weight: 600; }"
-        )
-        self._group_list.currentRowChanged.connect(self._select_group)
-
-        self._stack = QStackedWidget()
-
-        # 三个工具组
-        for g in TOOL_GROUPS:
-            self._group_list.addItem(
-                QListWidgetItem(f"{g['icon']}  {g['name']}")
-            )
-            tree = self._build_tool_tree(g["name"])
-            self._group_trees[g["name"]] = tree
-            self._stack.addWidget(tree)
-
-        body.addWidget(self._group_list)
-        body.addWidget(self._stack, 1)
-        root.addLayout(body, 1)
-
-    def _build_tool_tree(self, group_name: str) -> QTreeWidget:
-        tree = QTreeWidget()
-        tree.setHeaderHidden(True)
-        tree.setRootIsDecorated(True)
-        tree.setAnimated(True)
-        tree.setStyleSheet(
-            "QTreeWidget { border: 1px solid #E2E8F0; border-radius: 6px;"
-            " background: white; font-size: 12px; }"
-            "QTreeWidget::item { padding: 5px 4px; color: #334155; }"
-            "QTreeWidget::item:hover { background: #F1F5F9; }"
-            "QTreeWidget::item:selected { background: #DBEAFE; color: #1D4ED8; }"
-            "QTreeWidget::branch { background: transparent; }"
-        )
-
-        tools = get_tools_by_group(group_name)
-
-        # 按分类聚合
-        categories: Dict[str, List[dict]] = {}
-        for t in tools:
-            categories.setdefault(t["category"], []).append(t)
-
-        # 保证分类顺序稳定
-        for cat, items in categories.items():
-            cat_item = QTreeWidgetItem(tree)
-            cat_item.setText(0, f"▸ {cat}  ({len(items)})")
-            cat_item.setFlags(cat_item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
-            font = cat_item.font(0)
-            font.setBold(True)
-            cat_item.setFont(0, font)
-            cat_item.setForeground(0, Qt.GlobalColor.darkBlue)
-
-            for t in items:
-                child = QTreeWidgetItem(cat_item)
-                child.setText(0, t["name"])
-                child.setToolTip(0, t["description"])
-                # 存放 tool_id 供点击时读取
-                child.setData(0, Qt.ItemDataRole.UserRole, t["id"])
-                child.setForeground(0, QColor("#475569"))
-                cat_item.addChild(child)
-
-            cat_item.setExpanded(True)
-
-        tree.itemClicked.connect(self._on_item_clicked)
-        return tree
-
-    def _build_base_tree(self) -> QTreeWidget:
-        """工具基类面板：显示基类入口，点击后发射 tool_clicked("tool_base")。"""
-        tree = QTreeWidget()
-        tree.setHeaderHidden(True)
-        tree.setRootIsDecorated(False)
-        tree.setAnimated(True)
-        tree.setStyleSheet(
-            "QTreeWidget { border: 1px solid #E2E8F0; border-radius: 6px;"
-            " background: white; font-size: 12px; }"
-            "QTreeWidget::item { padding: 5px 4px; color: #334155; }"
-            "QTreeWidget::item:hover { background: #F1F5F9; }"
-            "QTreeWidget::item:selected { background: #DBEAFE; color: #1D4ED8; }"
-            "QTreeWidget::branch { background: transparent; }"
-        )
-        item = QTreeWidgetItem(tree)
-        item.setText(0, "工具基类  ToolBase")
-        item.setToolTip(0, "所有标注工具的共同基类，提供通用标注流程框架。")
-        item.setData(0, Qt.ItemDataRole.UserRole, "tool_base")
-        item.setForeground(0, QColor("#334155"))
-        tree.itemClicked.connect(self._on_item_clicked)
-        return tree
-
-    # ------------------------------------------------------------------ #
-    def _select_group(self, row: int) -> None:
-        if 0 <= row < self._stack.count():
-            self._stack.setCurrentIndex(row)
+        self._tree = ToolTreeWidget()
+        self._tree.tool_clicked.connect(self.tool_clicked.emit)
+        root.addWidget(self._tree, 1)
 
     def select_group(self, group_name: str) -> None:
-        """程序化选中某个工具组（添加工具时默认定位到右键节点所在分组）。"""
-        if not group_name:
-            return
-        for row in range(self._group_list.count()):
-            if group_name in self._group_list.item(row).text():
-                self._group_list.setCurrentRow(row)
-                return
-
-    def _on_item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
-        tool_id = item.data(0, Qt.ItemDataRole.UserRole)
-        if tool_id:  # 叶子工具项
-            self.tool_clicked.emit(tool_id)
+        """程序化选中某个工具组。"""
+        self._tree.select_group(group_name)

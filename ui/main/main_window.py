@@ -3,18 +3,15 @@
 布局：
     ┌─ 菜单栏 ───────────────────────────────────────────┐
     │  项目管理 | 视图 | 帮助                        │
-    ├───────────────┬────────────────────────────────────┤
-    │  ◀ 左侧可折叠  │                                    │
-    │  工具依赖流程 [＋ 添加工具]                         │
-    │  (流程图)     │           右侧工作区（预留）        │
-    │  ▲ 点击按钮   │                                    │
-    │  右侧弹出工具列表                                  │
-    └───────────────┴────────────────────────────────────┘
+    ├─────────────────────┬──────────────────────────────┤
+    │  流程标注 ▶执行 ＋添加工具 ◀ │                              │
+    │  工具依赖流程(流程图)   │    右侧工作区（预留）         │
+    └─────────────────────┴──────────────────────────────┘
 
 功能：
     - 项目管理菜单：展开项目列表，可新增项目、删除选中项目、切换当前项目
-    - 左侧面板（QDockWidget）可折叠/浮动/关闭，视图菜单可重新显示
-    - 「添加工具」按钮位于流程标题最右侧，点击后右侧弹出工具选择列表
+    - 左侧面板可收起（顶栏 ◀ 按钮 / 视图菜单 / Ctrl+B），收起后右侧工作区占满全屏
+    - 「＋ 添加工具」按钮：点击后弹出工具选择列表，选中即加入左侧流程
     - 依赖流程图 / 工具选择列表中点击工具 → 右侧面板展示工具基类信息（不弹窗）
     - 鼠标悬浮到流程工具节点上 → 显示工具简单说明（tooltip）
 """
@@ -33,7 +30,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -246,30 +242,34 @@ class MainWindow(QMainWindow):
     def _build_dock(self) -> None:
         container = QWidget()
         root = QVBoxLayout(container)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root.setContentsMargins(10, 8, 10, 8)
+        root.setSpacing(6)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.setChildrenCollapsible(False)
-
-        # 工具依赖流程（占满左侧面板）
-        flow_panel = QWidget()
-        flow_layout = QVBoxLayout(flow_panel)
-        flow_layout.setContentsMargins(10, 10, 10, 4)
-        flow_layout.setSpacing(6)
-
-        flow_header = QHBoxLayout()
-        flow_title = QLabel("工具依赖流程")
-        flow_title.setStyleSheet(
+        # 顶栏：标题 + 「▶ 执行」+「＋ 添加工具」按钮
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("流程标注")
+        title.setStyleSheet(
             "font-size: 13px; font-weight: 700; color: #334155;"
         )
-        flow_tip = QLabel("添加工具后，右侧显示流程依赖")
-        flow_tip.setStyleSheet("font-size: 11px; color: #94A3B8;")
-        flow_header.addWidget(flow_title)
-        flow_header.addStretch()
-        flow_header.addWidget(flow_tip)
-        # 添加工具按钮（位于标题行最右侧）
+        header.addWidget(title)
+        header.addStretch()
+
+        self.run_btn = QPushButton("▶ 执行")
+        self.run_btn.setToolTip("执行当前工具流程")
+        self.run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.run_btn.setStyleSheet(
+            "QPushButton { background: #10B981; color: white; border: none;"
+            " border-radius: 6px; padding: 4px 12px; font-size: 12px;"
+            " font-weight: 600; }"
+            "QPushButton:hover { background: #059669; }"
+            "QPushButton:pressed { background: #047857; }"
+        )
+        self.run_btn.clicked.connect(self._on_run_flow)
+        header.addWidget(self.run_btn)
+
         self.add_tool_btn = QPushButton("＋ 添加工具")
+        self.add_tool_btn.setToolTip("选择要添加的标注工具")
         self.add_tool_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add_tool_btn.setStyleSheet(
             "QPushButton { background: #2563EB; color: white; border: none;"
@@ -279,38 +279,75 @@ class MainWindow(QMainWindow):
             "QPushButton:pressed { background: #1E40AF; }"
         )
         self.add_tool_btn.clicked.connect(self._show_tool_picker)
-        flow_header.addWidget(self.add_tool_btn)
-        flow_layout.addLayout(flow_header)
+        header.addWidget(self.add_tool_btn)
 
+        self.collapse_btn = QPushButton("◀")
+        self.collapse_btn.setFixedSize(22, 22)
+        self.collapse_btn.setToolTip(
+            "收起左侧面板，让右侧全屏显示（视图菜单或 Ctrl+B 可重新展开）"
+        )
+        self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapse_btn.setStyleSheet(
+            "QPushButton { background: transparent; color: #94A3B8;"
+            " border: none; border-radius: 6px; font-size: 11px; }"
+            "QPushButton:hover { background: #E2E8F0; color: #0F172A; }"
+            "QPushButton:pressed { background: #CBD5E1; }"
+        )
+        self.collapse_btn.clicked.connect(self._collapse_panel)
+        header.addWidget(self.collapse_btn)
+        root.addLayout(header)
+
+        # 工具依赖流程
         self.tool_flow_view = ToolFlowView()
         self.tool_flow_view.tool_clicked.connect(self.show_tool_in_panel)
         self.tool_flow_view.tool_added.connect(self.show_tool_in_panel)
-        flow_layout.addWidget(self.tool_flow_view, 1)
-
-        splitter.addWidget(flow_panel)
-        root.addWidget(splitter)
+        root.addWidget(self.tool_flow_view, 1)
 
         dock = QDockWidget("工具流程与标注工具", self)
         dock.setObjectName("toolDock")
         dock.setWidget(container)
-        dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-            | QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-        )
+        # 隐藏 Qt 默认标题栏：自定义顶栏已含「◀ 收起」按钮，避免出现双标题栏
+        dock.setTitleBarWidget(QWidget())
+        dock.setFeatures(QDockWidget.DockWidgetFeature(0))
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
         self._tool_dock = dock
         dock.setMinimumWidth(300)
 
+    def _on_run_flow(self) -> None:
+        """「▶ 执行」按钮：适配视图并提示（实际引擎执行待接入）。"""
+        if not self.tool_flow_view._level_nodes:
+            self.statusBar().showMessage("请先向流程中添加工具", 3000)
+            return
+        self.tool_flow_view.fit_graph()
+        self.statusBar().showMessage("执行流程（待接入实际引擎）", 3000)
+
+    def _collapse_panel(self) -> None:
+        """收起左侧面板：右侧工作区自动占满全屏。"""
+        self._tool_dock.hide()
+        self.statusBar().showMessage(
+            "左侧面板已收起（视图菜单或 Ctrl+B 可重新展开）", 3000
+        )
+
     def left_dock_toggle_action(self) -> QAction:
-        """左侧面板的显示/隐藏开关（供视图菜单使用）。"""
-        act = self._tool_dock.toggleViewAction()
-        act.setText("显示左侧面板")
+        """左侧面板的显示/隐藏开关（供视图菜单使用，Ctrl+B 快捷切换）。
+
+        与 dock 可见性双向同步：菜单勾选状态即面板是否显示。
+        """
+        act = QAction("显示/隐藏左侧面板", self)
+        act.setCheckable(True)
+        act.setChecked(self._tool_dock.isVisible())
+        act.setShortcut(QKeySequence("Ctrl+B"))
+        act.triggered.connect(self._set_panel_visible)
+        self._tool_dock.visibilityChanged.connect(act.setChecked)
         return act
+
+    def _set_panel_visible(self, visible: bool) -> None:
+        """视图菜单/快捷键切换左侧面板可见性。"""
+        self._tool_dock.setVisible(visible)
+        if not visible:
+            self.statusBar().showMessage(
+                "左侧面板已收起（视图菜单或 Ctrl+B 可重新展开）", 3000
+            )
 
     # ------------------------------------------------------------------ #
     # 流程依赖展示（右侧面板）
