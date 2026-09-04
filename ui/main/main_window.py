@@ -186,15 +186,15 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     # ------------------------------------------------------------------ #
-    # 初始布局：左右按 4:6 比例
+    # 初始布局：左右按 3:7 比例
     # ------------------------------------------------------------------ #
     def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         super().showEvent(event)
         if self._initial_ratio_applied:
             return
         self._initial_ratio_applied = True
-        # 左侧 dock 占 40%，右侧工作区占 60%
-        left = max(self._tool_dock.minimumWidth(), int(self.width() * 0.4))
+        # 左侧 dock 占 30%，右侧工作区占 70%
+        left = max(self._tool_dock.minimumWidth(), int(self.width() * 0.3))
         self.resizeDocks([self._tool_dock], [left], Qt.Orientation.Horizontal)
 
     # ------------------------------------------------------------------ #
@@ -303,7 +303,7 @@ class MainWindow(QMainWindow):
         self.tool_flow_view.tool_added.connect(self.show_tool_in_panel)
         root.addWidget(self.tool_flow_view, 1)
 
-        dock = QDockWidget("工具流程与标注工具", self)
+        dock = QDockWidget("工具流程", self)
         dock.setObjectName("toolDock")
         dock.setWidget(container)
         # 隐藏 Qt 默认标题栏：自定义顶栏已含「◀ 收起」按钮，避免出现双标题栏
