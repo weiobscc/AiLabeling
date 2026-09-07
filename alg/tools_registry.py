@@ -36,13 +36,38 @@ TOOL_GROUPS: List[Dict[str, Any]] = [
 # ---------------------------------------------------------------------- #
 # 工具注册表
 # ---------------------------------------------------------------------- #
+# 工具节点类型（数据流角色）
+KIND_SOURCE = "source"      # 数据源：产出一批样本（如加载图片）
+KIND_PROCESS = "process"    # 图像处理：Sample → Sample（预处理/裁剪，后续扩展）
+KIND_ANNOTATE = "annotate"  # 人工标注：交互式（画布）
+KIND_INFER = "infer"        # AI 推理：批量预标注（自动写 auto:* 标注）
+KIND_EXPORT = "export"      # 数据导出（生成数据集，后续扩展）
+
 TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     # ------------------------- 通用工具 ------------------------- #
+    "image_loader": {
+        "id": "image_loader",
+        "name": "加载图片",
+        "group": "通用工具",
+        "category": "数据源",
+        "kind": KIND_SOURCE,
+        "description": "选择文件夹作为数据源，扫描其中的图片供流程内所有标注 / 推理工具共享。",
+        "dependencies": ["tool_base"],
+        "params": [
+            {"key": "folder", "label": "图片文件夹", "type": "str", "default": "",
+             "description": "包含待标注图片的文件夹路径"},
+            {"key": "recursive", "label": "递归子目录", "type": "bool", "default": True,
+             "description": "是否递归扫描子目录中的图片"},
+        ],
+    },
     "rect_label": {
         "id": "rect_label",
         "name": "矩形框标注",
         "group": "通用工具",
         "category": "基础标注",
+        "kind": KIND_ANNOTATE,
+        "produces": ["rect"],
+        "interactive": True,
         "description": "通过拖拽绘制矩形标注框，是最常用的目标标注方式。",
         "dependencies": ["tool_base"],
         "params": [
@@ -83,6 +108,24 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
              "description": "AI 建议框达到置信度后自动确认"},
         ],
     },
+    "export_yolo": {
+        "id": "export_yolo",
+        "name": "生成数据集",
+        "group": "通用工具",
+        "category": "导出",
+        "kind": KIND_EXPORT,
+        "consumes": ["rect"],
+        "description": "把已标注样本导出为 YOLO 检测格式数据集（images / labels / data.yaml / classes.txt），默认写入当前工程目录。",
+        "dependencies": ["tool_base"],
+        "params": [
+            {"key": "output_dir", "label": "输出目录", "type": "str", "default": "",
+             "description": "数据集输出根目录，留空则使用当前工程目录下的 yolo_dataset"},
+            {"key": "include_auto", "label": "包含AI预标注", "type": "bool", "default": False,
+             "description": "是否把 auto:*（AI 候选框）一并导出为真值；默认仅导出人工标注"},
+            {"key": "copy_images", "label": "复制图片", "type": "bool", "default": True,
+             "description": "是否把图片复制进数据集 images/ 目录（关闭则 data.yaml 引用原图路径）"},
+        ],
+    },
     "image_viewer": {
         "id": "image_viewer",
         "name": "图像浏览",
@@ -104,6 +147,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "name": "目标检测",
         "group": "YOLO工具",
         "category": "检测",
+        "kind": KIND_INFER,
+        "produces": ["rect"],
         "description": "使用 YOLO 模型自动检测图像中的目标并生成候选标注框。",
         "dependencies": ["tool_base", "yolo_engine"],
         "params": [
@@ -297,3 +342,23 @@ def get_tools_by_group(group_name: str) -> List[Dict[str, Any]]:
 def get_tool(tool_id: str) -> Dict[str, Any]:
     """按 id 获取工具元数据。"""
     return TOOL_REGISTRY[tool_id]
+
+
+def kind_of(meta: Dict[str, Any]) -> str:
+    """获取工具的数据流角色（kind）。
+
+    显式声明优先；未声明的旧工具按惯例推断：
+        - 引擎 / 基座类（系统组）→ process
+        - YOLO / Paddle 组的检测分割分类等 → infer
+        - 其余人工工具 → annotate
+    """
+    kind = meta.get("kind")
+    if kind:
+        return kind
+    if meta.get("group") == "系统":
+        return KIND_PROCESS
+    if meta.get("group") in ("YOLO工具", "Paddle工具") and meta.get(
+        "category"
+    ) in ("检测", "分割", "分类", "关键点", "OCR"):
+        return KIND_INFER
+    return KIND_ANNOTATE

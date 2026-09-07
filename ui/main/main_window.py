@@ -30,15 +30,14 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from alg.tools_registry import get_tool
-from ui.common.tool_base_window import ToolBasePanel
 from ui.common.tool_flow_view import ToolFlowView
 from ui.common.tool_panel import ToolPanel
+from ui.parts.flow_workspace import FlowWorkspace
 
 _STYLE = """
 QMenuBar {
@@ -221,20 +220,12 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_act)
 
     # ------------------------------------------------------------------ #
-    # 右侧工作区：初始为空，添加工具后显示流程依赖
+    # 右侧工作区：数据源 + 标注/检测等按工具切换的运行环境
     # ------------------------------------------------------------------ #
     def _build_central(self) -> None:
-        self._workspace_stack = QStackedWidget()
-        self._workspace_stack.setObjectName("workspace")
-        self._workspace_stack.setStyleSheet(
-            "QWidget#workspace { background: #F8FAFC; }"
-        )
-
-        # 流程依赖面板：初始为空
-        self._tool_panel = ToolBasePanel()
-        self._workspace_stack.addWidget(self._tool_panel)
-
-        self.setCentralWidget(self._workspace_stack)
+        self._workspace = FlowWorkspace()
+        self._workspace.sig_message.connect(self._on_workspace_message)
+        self.setCentralWidget(self._workspace)
 
     # ------------------------------------------------------------------ #
     # 左侧可折叠面板
@@ -314,12 +305,21 @@ class MainWindow(QMainWindow):
         dock.setMinimumWidth(300)
 
     def _on_run_flow(self) -> None:
-        """「▶ 执行」按钮：适配视图并提示（实际引擎执行待接入）。"""
-        if not self.tool_flow_view._level_nodes:
+        """「▶ 执行」按钮：加载数据源 → 对流程中推理节点批量预标注。"""
+        tool_ids = [
+            node.tool_id
+            for level in self.tool_flow_view._level_nodes
+            for node in level
+            if node.node_type == "tool" and node.tool_id
+        ]
+        if not tool_ids:
             self.statusBar().showMessage("请先向流程中添加工具", 3000)
             return
         self.tool_flow_view.fit_graph()
-        self.statusBar().showMessage("执行流程（待接入实际引擎）", 3000)
+        self._workspace.run_flow(tool_ids)
+
+    def _on_workspace_message(self, text: str, timeout: int) -> None:
+        self.statusBar().showMessage(text, timeout)
 
     def _collapse_panel(self) -> None:
         """收起左侧面板：右侧工作区自动占满全屏。"""
@@ -352,17 +352,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # 流程依赖展示（右侧面板）
     # ------------------------------------------------------------------ #
-    def show_tool_in_panel(self, tool_id: str, _name: str = "") -> None:
-        """添加/点击工具后由右侧面板展示该工具的流程依赖。"""
-        try:
-            self._tool_panel.show_dependency(tool_id)
-        except KeyError:
-            self.statusBar().showMessage(f"未知工具：{tool_id}", 3000)
-            return
-        self._workspace_stack.setCurrentWidget(self._tool_panel)
-        self.statusBar().showMessage(
-            f"已显示流程依赖：{get_tool(tool_id)['name']}", 3000
-        )
+    def show_tool_in_panel(self, tool_id: str, name: str = "") -> None:
+        """添加/点击工具后：右侧工作区切换到该工具对应页面。"""
+        self._workspace.activate_tool(tool_id, name)
 
     # ------------------------------------------------------------------ #
     # 「添加工具」弹出选择
