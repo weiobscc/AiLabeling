@@ -17,7 +17,7 @@ _window: MainWindow | None = None
 
 def main() -> int:
     global _app, _window
-
+    #你好
     _app = QApplication(sys.argv)
     _app.setApplicationName("AI 标注训练软件")
     _app.setStyle("Fusion")
